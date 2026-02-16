@@ -1,0 +1,4 @@
+pypdf
+openai
+faiss-cpu
+numpy
