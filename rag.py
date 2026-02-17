@@ -78,23 +78,187 @@ def answer_question(question: str, top_k: int = 5, similarity_threshold: float =
     
     return answer, retrieved_texts
 
+def load_all_chunks(jsonl_path="data/ingested.jsonl"):
+    """Load all document chunks from the ingested JSONL file."""
+    with open(jsonl_path, "r", encoding="utf-8") as f:
+        return [json.loads(line) for line in f]
+
+def chunk_text_for_summary(chunks, max_chars=8000):
+    """Group chunks into batches that fit within token limits."""
+    batches = []
+    current_batch = []
+    current_length = 0
+    
+    for chunk in chunks:
+        chunk_text = chunk["text"]
+        chunk_length = len(chunk_text)
+        
+        # If adding this chunk exceeds limit, start new batch
+        if current_length + chunk_length > max_chars and current_batch:
+            batches.append(current_batch)
+            current_batch = [chunk]
+            current_length = chunk_length
+        else:
+            current_batch.append(chunk)
+            current_length += chunk_length
+    
+    # Add the last batch if not empty
+    if current_batch:
+        batches.append(current_batch)
+    
+    return batches
+
+def generate_document_summary(document_title="document", max_summary_length=500):
+    """Generate a comprehensive summary of the entire document."""
+    try:
+        # Load all chunks
+        all_chunks = load_all_chunks()
+        if not all_chunks:
+            return "No document content found to summarize."
+        
+        # Group chunks into manageable batches
+        chunk_batches = chunk_text_for_summary(all_chunks)
+        
+        if len(chunk_batches) == 1:
+            # Single batch - direct summarization
+            content = "\n\n".join([chunk["text"] for chunk in chunk_batches[0]])
+            
+            prompt = (
+                f"Create a comprehensive summary of the following document content. "
+                f"The summary should be concise but cover all key points. "
+                f"Use ONLY the information provided in the document.\n\n"
+                f"Document Content:\n{content}\n\n"
+                f"Summary:"
+            )
+            
+            response = openai.ChatCompletion.create(
+                model=LLM_MODEL,
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.1,
+                max_tokens=max_summary_length,
+            )
+            
+            return response["choices"][0]["message"]["content"].strip()
+        
+        else:
+            # Multiple batches - summarize each batch then combine
+            batch_summaries = []
+            
+            for i, batch in enumerate(chunk_batches):
+                content = "\n\n".join([chunk["text"] for chunk in batch])
+                
+                prompt = (
+                    f"Summarize the key points from this section of the document. "
+                    f"Focus on the main ideas and important details. "
+                    f"Use ONLY the information provided.\n\n"
+                    f"Section Content:\n{content}\n\n"
+                    f"Section Summary:"
+                )
+                
+                response = openai.ChatCompletion.create(
+                    model=LLM_MODEL,
+                    messages=[{"role": "user", "content": prompt}],
+                    temperature=0.1,
+                    max_tokens=300,
+                )
+                
+                batch_summaries.append(response["choices"][0]["message"]["content"].strip())
+            
+            # Combine batch summaries into final summary
+            combined_content = "\n\n".join(batch_summaries)
+            
+            final_prompt = (
+                f"Create a comprehensive summary by combining these section summaries. "
+                f"Ensure all key points are covered while maintaining conciseness. "
+                f"Remove any redundancy between sections.\n\n"
+                f"Section Summaries:\n{combined_content}\n\n"
+                f"Final Comprehensive Summary:"
+            )
+            
+            response = openai.ChatCompletion.create(
+                model=LLM_MODEL,
+                messages=[{"role": "user", "content": final_prompt}],
+                temperature=0.1,
+                max_tokens=max_summary_length,
+            )
+            
+            return response["choices"][0]["message"]["content"].strip()
+    
+    except Exception as e:
+        return f"Error generating summary: {str(e)}"
+
+def generate_key_points(top_k=10):
+    """Extract key points from the document using chunk importance."""
+    try:
+        all_chunks = load_all_chunks()
+        if not all_chunks:
+            return "No document content found."
+        
+        # For simplicity, take first few chunks and last few chunks
+        # In a more sophisticated version, we could rank by importance
+        important_chunks = all_chunks[:top_k//2] + all_chunks[-top_k//2:]
+        content = "\n\n".join([chunk["text"] for chunk in important_chunks])
+        
+        prompt = (
+            f"Extract the key points and main ideas from this document content. "
+            f"Present them as a bulleted list of the most important information. "
+            f"Use ONLY the information provided in the document.\n\n"
+            f"Document Content:\n{content}\n\n"
+            f"Key Points:"
+        )
+        
+        response = openai.ChatCompletion.create(
+            model=LLM_MODEL,
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.1,
+            max_tokens=400,
+        )
+        
+        return response["choices"][0]["message"]["content"].strip()
+    
+    except Exception as e:
+        return f"Error generating key points: {str(e)}"
+
 if __name__ == "__main__":
-    print("StudyBuddy RAG System with Grounding Enforcement")
-    print("=" * 50)
+    print("StudyBuddy RAG System")
+    print("=" * 30)
     
     while True:
-        question = input("\nAsk a question (or 'quit' to exit): ")
-        if question.lower() in ['quit', 'exit', 'q']:
-            break
+        print("\nOptions:")
+        print("1. Ask a question")
+        print("2. Generate document summary")  
+        print("3. Generate key points")
+        print("4. Quit")
+        
+        choice = input("\nSelect option (1-4): ").strip()
+        
+        if choice == "1":
+            question = input("\nAsk a question: ")
+            answer, retrieved = answer_question(question)
             
-        answer, retrieved = answer_question(question)
+            print(f"\nQuestion: {question}")
+            print(f"Answer: {answer}")
+            
+            if retrieved:
+                print(f"\nRetrieved {len(retrieved)} relevant chunks:")
+                for i, chunk in enumerate(retrieved, 1):
+                    print(f"\nChunk {i}: {chunk[:200]}{'...' if len(chunk) > 200 else ''}")
+            else:
+                print("\nNo relevant chunks found above similarity threshold.")
         
-        print(f"\nQuestion: {question}")
-        print(f"Answer: {answer}")
+        elif choice == "2":
+            print("\nGenerating document summary...")
+            summary = generate_document_summary()
+            print(f"\nDocument Summary:\n{summary}")
         
-        if retrieved:
-            print(f"\nRetrieved {len(retrieved)} relevant chunks:")
-            for i, chunk in enumerate(retrieved, 1):
-                print(f"\nChunk {i}: {chunk[:200]}{'...' if len(chunk) > 200 else ''}")
+        elif choice == "3":
+            print("\nExtracting key points...")
+            key_points = generate_key_points()
+            print(f"\nKey Points:\n{key_points}")
+        
+        elif choice == "4":
+            print("Goodbye!")
+            break
+        
         else:
-            print("\nNo relevant chunks found above similarity threshold.")
+            print("Invalid option. Please select 1-4.")
