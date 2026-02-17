@@ -5,17 +5,14 @@ import numpy as np
 from pathlib import Path
 from typing import List, Dict
 import openai
+import openai
 from dotenv import load_dotenv
 load_dotenv()
-import openai
 openai.api_key = os.getenv("OPENAI_API_KEY")
+openai.api_base = "https://openrouter.ai/api/v1"
 print("OPENAI_API_KEY loaded:", os.getenv("OPENAI_API_KEY"))
 
 EMBEDDING_MODEL = "text-embedding-ada-002"  # Or your preferred model
-
-def load_chunks(jsonl_path: Path) -> List[Dict]:
-    with open(jsonl_path, "r", encoding="utf-8") as f:
-        return [json.loads(line) for line in f]
 
 def get_embedding(text: str) -> List[float]:
     response = openai.Embedding.create(
@@ -23,6 +20,10 @@ def get_embedding(text: str) -> List[float]:
         model=EMBEDDING_MODEL
     )
     return response["data"][0]["embedding"]
+
+def load_chunks(jsonl_path: Path) -> List[Dict]:
+    with open(jsonl_path, "r", encoding="utf-8") as f:
+        return [json.loads(line) for line in f]
 
 def main(
     input_jsonl="data/ingested.jsonl",

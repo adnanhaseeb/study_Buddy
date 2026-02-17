@@ -33,6 +33,7 @@ if __name__ == "__main__":
     # Load environment and OpenAI key
     load_dotenv()
     openai.api_key = os.getenv("OPENAI_API_KEY")
+    openai.api_base = "https://openrouter.ai/api/v1"
 
     # Load index and metadata
     index = load_faiss_index("data/faiss.index")
