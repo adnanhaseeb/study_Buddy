@@ -1,5 +1,8 @@
 pypdf
-openai
+openai==0.28
 faiss-cpu
 numpy
 sentence-transformers
+streamlit
+pandas
+python-dotenv
