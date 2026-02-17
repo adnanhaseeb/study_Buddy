@@ -1,5 +1,6 @@
 import os
 import json
+import csv
 import numpy as np
 import openai
 from dotenv import load_dotenv
@@ -21,6 +22,20 @@ def get_chunk_texts(metadata, indices, jsonl_path="data/ingested.jsonl"):
         chunks = [json.loads(line) for line in f]
     return [chunks[i]["text"] for i in indices]
 
+def get_chunks_with_metadata(indices, jsonl_path="data/ingested.jsonl"):
+    """Get chunk texts along with their metadata for citations."""
+    with open(jsonl_path, "r", encoding="utf-8") as f:
+        chunks = [json.loads(line) for line in f]
+    
+    results = []
+    for i in indices:
+        chunk = chunks[i]
+        results.append({
+            'text': chunk['text'],
+            'metadata': chunk['metadata']
+        })
+    return results
+
 def answer_question(question: str, top_k: int = 5, similarity_threshold: float = 0.8):
     # 1. Embed question
     query_emb = get_embedding(question)
@@ -40,9 +55,12 @@ def answer_question(question: str, top_k: int = 5, similarity_threshold: float =
     
     # If no relevant chunks found, return "Not found in document"
     if not relevant_indices:
-        return "Not found in document.", []
+        return "Not found in document.", [], []
     
-    retrieved_texts = get_chunk_texts(metadata, relevant_indices)
+    retrieved_chunks = get_chunks_with_metadata(relevant_indices)
+    retrieved_texts = [chunk['text'] for chunk in retrieved_chunks]
+    citations = [f"[{chunk['metadata']['filename']}, Page {chunk['metadata']['page_number']}, Chunk {chunk['metadata']['chunk_index']}]" 
+                for chunk in retrieved_chunks]
 
     # 4. Build enhanced context for LLM with strict grounding
     context = "\n\n".join(retrieved_texts)
@@ -74,9 +92,9 @@ def answer_question(question: str, top_k: int = 5, similarity_threshold: float =
     if (len(answer) > 50 and  # Only check substantial answers
         "not found in document" not in answer_lower and
         not any(word in context_lower for word in answer_lower.split()[:10])):  # Check first 10 words
-        return "Not found in document.", retrieved_texts
+        return "Not found in document.", retrieved_texts, citations
     
-    return answer, retrieved_texts
+    return answer, retrieved_texts, citations
 
 def load_all_chunks(jsonl_path="data/ingested.jsonl"):
     """Load all document chunks from the ingested JSONL file."""
@@ -219,6 +237,103 @@ def generate_key_points(top_k=10):
     except Exception as e:
         return f"Error generating key points: {str(e)}"
 
+def generate_flashcards(num_flashcards=15, output_file="data/flashcards.csv"):
+    """Generate Q&A flashcards from the document content."""
+    try:
+        all_chunks = load_all_chunks()
+        if not all_chunks:
+            return "No document content found for flashcard generation."
+        
+        # Select diverse chunks for flashcard generation
+        step = max(1, len(all_chunks) // num_flashcards)
+        selected_chunks = all_chunks[::step][:num_flashcards]
+        
+        flashcards = []
+        
+        for i, chunk in enumerate(selected_chunks):
+            content = chunk["text"]
+            metadata = chunk["metadata"]
+            
+            # Generate question-answer pair from chunk
+            prompt = (
+                f"Create a clear, specific question and answer based on the following content. "
+                f"The question should test understanding of key information. "
+                f"Format your response as:\n"
+                f"Question: [your question]\n"
+                f"Answer: [your answer]\n\n"
+                f"Content: {content}"
+            )
+            
+            response = openai.ChatCompletion.create(
+                model=LLM_MODEL,
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.2,
+                max_tokens=200,
+            )
+            
+            result = response["choices"][0]["message"]["content"].strip()
+            
+            # Parse the response
+            lines = result.split('\n')
+            question = ""
+            answer = ""
+            
+            for line in lines:
+                if line.startswith("Question:"):
+                    question = line.replace("Question:", "").strip()
+                elif line.startswith("Answer:"):
+                    answer = line.replace("Answer:", "").strip()
+            
+            if question and answer:
+                citation = f"{metadata['filename']} (Page {metadata['page_number']}, Chunk {metadata['chunk_index']})"
+                flashcards.append({
+                    'Question': question,
+                    'Answer': answer,
+                    'Citation': citation,
+                    'Tags': 'StudyBuddy'
+                })
+        
+        # Export to CSV (Anki compatible format)
+        if flashcards:
+            with open(output_file, 'w', newline='', encoding='utf-8') as csvfile:
+                fieldnames = ['Question', 'Answer', 'Citation', 'Tags']
+                writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+                writer.writeheader()
+                writer.writerows(flashcards)
+            
+            return f"Generated {len(flashcards)} flashcards and saved to {output_file}"
+        else:
+            return "No flashcards could be generated from the document content."
+    
+    except Exception as e:
+        return f"Error generating flashcards: {str(e)}"
+
+def export_summary_with_citations(output_file="data/summary_with_citations.txt"):
+    """Generate and export a summary with full citation information."""
+    try:
+        summary = generate_document_summary()
+        all_chunks = load_all_chunks()
+        
+        # Create citation list
+        citations = []
+        for i, chunk in enumerate(all_chunks):
+            metadata = chunk["metadata"]
+            citation = f"[{i+1}] {metadata['filename']}, Page {metadata['page_number']}, Chunk {metadata['chunk_index']}"
+            citations.append(citation)
+        
+        # Combine summary with citations
+        full_content = f"Document Summary\\n{'='*50}\\n\\n{summary}\\n\\n"
+        full_content += f"Citations\\n{'='*20}\\n"
+        full_content += "\\n".join(citations[:20])  # Limit to first 20 citations
+        
+        with open(output_file, 'w', encoding='utf-8') as f:
+            f.write(full_content)
+        
+        return f"Summary with citations exported to {output_file}"
+    
+    except Exception as e:
+        return f"Error exporting summary: {str(e)}"
+
 if __name__ == "__main__":
     print("StudyBuddy RAG System")
     print("=" * 30)
@@ -228,22 +343,25 @@ if __name__ == "__main__":
         print("1. Ask a question")
         print("2. Generate document summary")  
         print("3. Generate key points")
-        print("4. Quit")
+        print("4. Generate flashcards")
+        print("5. Export summary with citations")
+        print("6. Quit")
         
-        choice = input("\nSelect option (1-4): ").strip()
+        choice = input("\nSelect option (1-6): ").strip()
         
         if choice == "1":
             question = input("\nAsk a question: ")
-            answer, retrieved = answer_question(question)
+            answer, retrieved, citations = answer_question(question)
             
             print(f"\nQuestion: {question}")
             print(f"Answer: {answer}")
             
-            if retrieved:
+            if retrieved and citations:
                 print(f"\nRetrieved {len(retrieved)} relevant chunks:")
-                for i, chunk in enumerate(retrieved, 1):
-                    print(f"\nChunk {i}: {chunk[:200]}{'...' if len(chunk) > 200 else ''}")
-            else:
+                for i, (chunk, citation) in enumerate(zip(retrieved, citations), 1):
+                    print(f"\nChunk {i}: {chunk[:150]}{'...' if len(chunk) > 150 else ''}")
+                    print(f"Citation: {citation}")
+            elif not retrieved:
                 print("\nNo relevant chunks found above similarity threshold.")
         
         elif choice == "2":
@@ -257,8 +375,28 @@ if __name__ == "__main__":
             print(f"\nKey Points:\n{key_points}")
         
         elif choice == "4":
+            num_cards = input("\nNumber of flashcards to generate (default 15): ").strip()
+            if not num_cards:
+                num_cards = 15
+            else:
+                try:
+                    num_cards = int(num_cards)
+                except ValueError:
+                    print("Invalid number, using default of 15")
+                    num_cards = 15
+            
+            print(f"\nGenerating {num_cards} flashcards...")
+            result = generate_flashcards(num_cards)
+            print(f"\n{result}")
+        
+        elif choice == "5":
+            print("\nExporting summary with citations...")
+            result = export_summary_with_citations()
+            print(f"\n{result}")
+        
+        elif choice == "6":
             print("Goodbye!")
             break
         
         else:
-            print("Invalid option. Please select 1-4.")
+            print("Invalid option. Please select 1-6.")
