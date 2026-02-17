@@ -21,7 +21,7 @@ def get_chunk_texts(metadata, indices, jsonl_path="data/ingested.jsonl"):
         chunks = [json.loads(line) for line in f]
     return [chunks[i]["text"] for i in indices]
 
-def answer_question(question: str, top_k: int = 5):
+def answer_question(question: str, top_k: int = 5, similarity_threshold: float = 0.8):
     # 1. Embed question
     query_emb = get_embedding(question)
 
@@ -29,29 +29,72 @@ def answer_question(question: str, top_k: int = 5):
     index = load_faiss_index("data/faiss.index")
     metadata = load_metadata("data/metadata.json")
     D, I = search_index(index, query_emb, top_k=top_k)
-    indices = I[0].tolist()
-    retrieved_texts = get_chunk_texts(metadata, indices)
+    
+    # 3. Filter by similarity threshold (lower distance = higher similarity)
+    relevant_indices = []
+    relevant_distances = []
+    for i, distance in enumerate(D[0]):
+        if distance <= similarity_threshold:  
+            relevant_indices.append(I[0][i])
+            relevant_distances.append(distance)
+    
+    # If no relevant chunks found, return "Not found in document"
+    if not relevant_indices:
+        return "Not found in document.", []
+    
+    retrieved_texts = get_chunk_texts(metadata, relevant_indices)
 
-    # 3. Build context for LLM
+    # 4. Build enhanced context for LLM with strict grounding
     context = "\n\n".join(retrieved_texts)
     prompt = (
-        f"Answer the following question using ONLY the provided context. "
-        f"If the answer is not present, reply exactly: 'Not found in document.'\n\n"
-        f"Context:\n{context}\n\nQuestion: {question}\nAnswer:"
+        f"You are a precise document assistant. Follow these rules STRICTLY:\n"
+        f"1. Answer ONLY using information explicitly stated in the provided context\n"
+        f"2. Do NOT use any external knowledge or make assumptions\n" 
+        f"3. If the context does not contain the answer, respond EXACTLY: 'Not found in document.'\n"
+        f"4. Do not say 'based on the context' or similar phrases - just give the direct answer\n\n"
+        f"Context:\n{context}\n\n"
+        f"Question: {question}\n"
+        f"Answer:"
     )
 
-    # 4. Call LLM
+    # 5. Call LLM with low temperature for consistency
     response = openai.ChatCompletion.create(
         model=LLM_MODEL,
         messages=[{"role": "user", "content": prompt}],
-        temperature=0.1,
+        temperature=0.05,  # Very low temperature for grounded responses
         max_tokens=500,
     )
     answer = response["choices"][0]["message"]["content"].strip()
+    
+    # 6. Post-processing validation: Check if LLM followed grounding rules
+    answer_lower = answer.lower()
+    context_lower = context.lower()
+    
+    # If answer contains information not in context, enforce grounding
+    if (len(answer) > 50 and  # Only check substantial answers
+        "not found in document" not in answer_lower and
+        not any(word in context_lower for word in answer_lower.split()[:10])):  # Check first 10 words
+        return "Not found in document.", retrieved_texts
+    
     return answer, retrieved_texts
 
 if __name__ == "__main__":
-    question = input("Ask a question: ")
-    answer, retrieved = answer_question(question)
-    print("\nAnswer:\n", answer)
-    print("\nRetrieved context:\n", "\n---\n".join(retrieved))
+    print("StudyBuddy RAG System with Grounding Enforcement")
+    print("=" * 50)
+    
+    while True:
+        question = input("\nAsk a question (or 'quit' to exit): ")
+        if question.lower() in ['quit', 'exit', 'q']:
+            break
+            
+        answer, retrieved = answer_question(question)
+        
+        print(f"\nQuestion: {question}")
+        print(f"Answer: {answer}")
+        
+        if retrieved:
+            print(f"\nRetrieved {len(retrieved)} relevant chunks:")
+            for i, chunk in enumerate(retrieved, 1):
+                print(f"\nChunk {i}: {chunk[:200]}{'...' if len(chunk) > 200 else ''}")
+        else:
+            print("\nNo relevant chunks found above similarity threshold.")
