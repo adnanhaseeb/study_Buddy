@@ -9,7 +9,7 @@ from vectorstore import load_faiss_index, load_metadata, search_index
 load_dotenv()
 openai.api_key = os.getenv("OPENAI_API_KEY")
 EMBEDDING_MODEL = "text-embedding-ada-002"
-LLM_MODEL = "gpt-3.5-turbo"  # Or your preferred model
+LLM_MODEL = "gpt-3.5-turbo"  
 openai.api_base = "https://openrouter.ai/api/v1"
 
 def get_embedding(text: str) -> np.ndarray:
